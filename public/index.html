@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="uk">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Парсер цін</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+    <h1>Парсинг цін з інтернет-магазинів</h1>
+
+    <form id="upload-form" enctype="multipart/form-data">
+        <input type="file" id="file-input" name="file" required />
+        <button type="submit">Завантажити файл</button>
+    </form>
+
+    <!-- Індикація завантаження -->
+    <div id="loading-indicator" style="display: none;">Завантаження...</div>
+
+    <h2>Результати</h2>
+    <div id="results-container">
+        <!-- Результати парсингу будуть відображені тут -->
+    </div>
+
+    <script src="script.js"></script>
+</body>
+
+</html>
