@@ -74,7 +74,7 @@ async function parseWithCluster(components) {
 
   const cluster = await Cluster.launch({
     concurrency: Cluster.CONCURRENCY_PAGE,
-    maxConcurrency: 5,
+    maxConcurrency: 4,
     puppeteerOptions: { headless: true, args: ["--no-sandbox", "--disable-setuid-sandbox"] }
   });
 

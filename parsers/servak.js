@@ -4,8 +4,8 @@ module.exports = {
   name: "Servak",
   url: (component) => `https://servak.com.ua/ua/search/?search=${encodeURIComponent(cleanComponent(component))}&limit=25`,
   selectors: {
-    container: ".row",
-    item: ".product-thumb",
+    container: ".container",
+    item: ".product-layout",
     name: ".h4",
     price: ".price",
     availability: ".btn-addtocart",
@@ -14,7 +14,7 @@ module.exports = {
   parseSite: async function (page, component) {
     try {
       const cleanedComponent = cleanComponent(component);
-      await page.goto(this.url(cleanedComponent), { waitUntil: "networkidle2", timeout: 12000 });
+      await page.goto(this.url(cleanedComponent), { waitUntil: "networkidle2", timeout: 8000 });
       await page.waitForSelector(this.selectors.container, { timeout: 8000 });
 
       const productItems = await page.evaluate(({ item, name, price, availability }) => {

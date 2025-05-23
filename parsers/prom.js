@@ -7,7 +7,7 @@ module.exports = {
       cleanComponent(component)
     )}&a10006=83770&binary_filters=presence_available`,
   selectors: {
-    container: ".IZV5x",
+    container: ".Oxjl-",
     item: ".l-GwW",
     name: ".h97_n",
     price: ".yzKb6",
@@ -71,12 +71,12 @@ const parsePrice = (priceText) => {
 // Карта порогов схожести
 const similarityThresholds = {
   "процесор": 0.89,
-  "відеокарта": 0.95,
+  "відеокарта": 0.93,
   "сервер": 0.9,
   "оперативнапам'ять": 0.89,
-  "накопичувач": 0.75,
-  "жорсткийдиск": 0.75,
-  "накопичувачssd": 0.75,
+  "накопичувач": 0.83,
+  "жорсткийдиск": 0.83,
+  "накопичувачssd": 0.83,
   "материнськаплата": 0.89,
 };
 
