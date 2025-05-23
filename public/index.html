@@ -2,29 +2,44 @@
 <html lang="uk">
 
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Парсер цін</title>
-    <link rel="stylesheet" href="style.css">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Парсер цін</title>
+  <link rel="stylesheet" href="style.css">
 </head>
 
 <body>
-    <h1>Парсинг цін з інтернет-магазинів</h1>
+  <h1>Парсинг цін з інтернет-магазинів</h1>
 
-    <form id="upload-form" enctype="multipart/form-data">
-        <input type="file" id="file-input" name="file" required />
-        <button type="submit">Завантажити файл</button>
-    </form>
+  <form id="upload-form" enctype="multipart/form-data">
+    <input type="file" id="file-input" name="file" required />
+    <button type="submit">Завантажити файл</button>
+  </form>
 
-    <!-- Індикація завантаження -->
-    <div id="loading-indicator" style="display: none;">Завантаження...</div>
+  <!-- Индикатор загрузки -->
+  <div id="loading-indicator" style="display: none;">Завантаження...</div>
 
-    <h2>Результати</h2>
-    <div id="results-container">
-        <!-- Результати парсингу будуть відображені тут -->
-    </div>
+  <div id="filters-menu" style="position: fixed; top: 10px; right: 350px; background: white; padding: 10px; border-radius: 5px; box-shadow: 0px 0px 10px rgba(0, 0, 0, 0.1);">
+    <label>
+      <input type="checkbox" id="availability-filter" />
+      Показати тільки товари, що є в наявності
+    </label>
+    <br>
+    <label>
+      <input type="checkbox" id="order-filter" />
+      Показувати товари Під замовлення
+    </label>
+  </div>
+  
+  
 
-    <script src="script.js"></script>
+  <!-- Меню с товарами, у которых цена ниже, чем у serverparts -->
+  <div id="cheaper-menu"></div>
+
+  <h2>Результати</h2>
+  <div id="results-container"></div>
+
+  <script src="script.js"></script>
 </body>
 
 </html>
