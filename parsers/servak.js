@@ -4,7 +4,7 @@ module.exports = {
   name: "Servak",
   url: (component) => `https://servak.com.ua/ua/search/?search=${encodeURIComponent(cleanComponent(component))}&limit=25`,
   selectors: {
-    container: ".container",
+    container: ".content-wrapper",
     item: ".product-layout",
     name: ".h4",
     price: ".price",
@@ -14,7 +14,7 @@ module.exports = {
   parseSite: async function (page, component) {
     try {
       const cleanedComponent = cleanComponent(component);
-      await page.goto(this.url(cleanedComponent), { waitUntil: "networkidle2", timeout: 8000 });
+      await page.goto(this.url(cleanedComponent), { waitUntil: "networkidle2", timeout: 10000 });
       await page.waitForSelector(this.selectors.container, { timeout: 8000 });
 
       const productItems = await page.evaluate(({ item, name, price, availability }) => {
@@ -60,7 +60,7 @@ const getSimilarityThreshold = (component) => {
   const category = Object.keys(similarityThresholds).find((prefix) =>
     normalizeText(component).startsWith(prefix)
   );
-  return category ? similarityThresholds[category] : 0.65;
+  return category ? similarityThresholds[category] : 0.75;
 };
 
 // Функция поиска лучшего совпадения
