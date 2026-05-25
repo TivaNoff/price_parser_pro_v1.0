@@ -7,12 +7,116 @@ const xml2js = require("xml2js");
 
 // Подключаем наши парсеры
 const serverShopParser = require("./parsers/server-shop");
-const servakParser = require("./parsers/servak");
 const hwfParser = require("./parsers/hwf");
 const hardkievParser = require("./parsers/hardkiev");
-const kyivtechParser = require("./parsers/kyivtech");
 const serverPartsParser = require("./parsers/serverparts");
 const promParser = require("./parsers/prom");
+const logger = require("./logger");
+
+function extractComponentsFromXml(parsedXml) {
+  if (parsedXml?.itemlist?.item) {
+    const items = Array.isArray(parsedXml.itemlist.item)
+      ? parsedXml.itemlist.item
+      : [parsedXml.itemlist.item];
+    return items.map((itm) => itm.name_uk || itm.name_ua).filter(Boolean);
+  }
+
+  const offers = parsedXml?.yml_catalog?.shop?.offers?.offer;
+  if (offers) {
+    const items = Array.isArray(offers) ? offers : [offers];
+    return items.map((itm) => itm.name_ua || itm.name_uk || itm.name).filter(Boolean);
+  }
+
+  return null;
+}
+
+function formatXmlPrice(price) {
+  const num = parseFloat(String(price ?? "").replace(",", "."));
+  if (Number.isNaN(num)) return "Ціна не знайдена";
+  return `${num.toFixed(2)} грн.`;
+}
+
+function formatXmlAvailability(offer) {
+  const qty = parseInt(offer.stock_quantity, 10);
+  if (offer.available === "true" || (!Number.isNaN(qty) && qty > 0)) {
+    return "В наявності";
+  }
+  return "Немає в наявності";
+}
+
+function extractServerPartsFromXml(parsedXml) {
+  const offers = parsedXml?.yml_catalog?.shop?.offers?.offer;
+  if (!offers) return null;
+
+  const items = Array.isArray(offers) ? offers : [offers];
+  const map = {};
+
+  for (const offer of items) {
+    const name = offer.name_ua || offer.name_uk || offer.name;
+    if (!name) continue;
+
+    map[name] = {
+      site: "ServerParts",
+      name,
+      price: formatXmlPrice(offer.price),
+      link: offer.url || "Посилання не знайдено",
+      availability: formatXmlAvailability(offer),
+    };
+  }
+
+  return map;
+}
+
+const ALLOWED_RESOURCE_TYPES = new Set(["document", "script", "xhr", "fetch", "stylesheet"]);
+
+function setupPageInterception(page) {
+  page.removeAllListeners("request");
+  page.on("request", (req) => {
+    if (ALLOWED_RESOURCE_TYPES.has(req.resourceType())) {
+      req.continue();
+    } else {
+      req.abort();
+    }
+  });
+}
+
+let progressStartTime = 0;
+let lastPlainProgressLog = 0;
+
+function formatProgressLine(completed, total, errors, currentSite, elapsedSec) {
+  const pct = total ? ((completed / total) * 100).toFixed(1) : "0.0";
+  const barLen = 24;
+  const filled = total ? Math.min(barLen, Math.round((completed / total) * barLen)) : 0;
+  const bar = "█".repeat(filled) + "░".repeat(barLen - filled);
+  const eta =
+    completed > 0 && completed < total
+      ? Math.round((elapsedSec / completed) * (total - completed))
+      : null;
+  const etaStr = eta !== null ? ` | ~${eta}с залишилось` : "";
+  const siteStr = currentSite ? ` | ${currentSite}` : "";
+  return `[${bar}] ${completed}/${total} (${pct}%) | помилок: ${errors} | ${elapsedSec}с${etaStr}${siteStr}`;
+}
+
+function reportProgress(completed, total, errors, currentSite) {
+  const elapsedSec = progressStartTime ? Math.round((Date.now() - progressStartTime) / 1000) : 0;
+  const line = formatProgressLine(completed, total, errors, currentSite, elapsedSec);
+
+  if (process.stdout.isTTY) {
+    process.stdout.write(`\r\x1b[2K${line}`);
+    return;
+  }
+
+  if (completed === 0 || completed - lastPlainProgressLog >= 10 || completed === total) {
+    console.log(line);
+    lastPlainProgressLog = completed;
+  }
+}
+
+function finishProgress() {
+  if (process.stdout.isTTY) {
+    process.stdout.write("\n");
+  }
+}
 
 const app = express();
 const upload = multer({ dest: "uploads/" });
@@ -27,21 +131,20 @@ app.post("/parse", upload.single("file"), async (req, res) => {
   const ext = path.extname(req.file.originalname).toLowerCase();
 
   let components = [];
+  let serverPartsFromXml = null;
   try {
     if (ext === ".xml") {
       const xmlData = fs.readFileSync(filePath, "utf-8");
       const parser = new xml2js.Parser({ trim: true, explicitArray: false });
       const parsedXml = await parser.parseStringPromise(xmlData);
 
-      if (parsedXml?.itemlist?.item) {
-        let items = parsedXml.itemlist.item;
-        if (!Array.isArray(items)) {
-          items = [items];
-        }
-        components = items.map((itm) => itm.name_uk).filter(Boolean);
-      } else {
+      serverPartsFromXml = extractServerPartsFromXml(parsedXml);
+      components = extractComponentsFromXml(parsedXml);
+      if (!components?.length) {
         fs.unlinkSync(filePath);
-        return res.json({ error: "Структура XML не відповідає очікуваній" });
+        return res.json({
+          error: "Структура XML не відповідає очікуваній (потрібен itemlist/item або yml_catalog/shop/offers/offer)",
+        });
       }
     } else {
       components = fs.readFileSync(filePath, "utf-8").split("\n").map(line => line.trim()).filter(Boolean);
@@ -51,46 +154,62 @@ app.post("/parse", upload.single("file"), async (req, res) => {
     return res.json({ error: "Помилка при читанні/парсингу файлу: " + err.message });
   }
 
-  console.time("Parsing Time");
+  const logPath = logger.startParseLog();
+  console.log(`Завантажено ${components.length} позицій. Лог: ${logPath}`);
+  logger.logInfo(`Завантажено ${components.length} позицій`, { file: req.file.originalname });
+
+  const parseStartedAt = Date.now();
   try {
-    const results = await parseWithCluster(components);
-    console.timeEnd("Parsing Time");
+    const results = await parseWithCluster(components, serverPartsFromXml);
+    const elapsedSec = Math.round((Date.now() - parseStartedAt) / 1000);
 
     fs.unlinkSync(filePath);
-    
+
     const outputFilePath = path.join(__dirname, "public", "parsed_results.json");
     fs.writeFileSync(outputFilePath, JSON.stringify(results, null, 2), "utf-8");
 
-    res.json({ results, file: "/parsed_results.json" });
+    logger.logInfo(`Парсинг завершено за ${elapsedSec}с`, { results: results.length });
+    console.log(`Готово за ${elapsedSec}с. Лог: ${logPath}`);
+
+    res.json({ results, file: "/parsed_results.json", logFile: logPath });
   } catch (err) {
-    console.timeEnd("Parsing Time");
+    logger.logError("Критична помилка парсингу", { message: err.message, stack: err.stack });
     fs.unlinkSync(filePath);
-    res.json({ error: err.message || "Помилка при парсингу" });
+    res.json({ error: err.message || "Помилка при парсингу", logFile: logPath });
+  } finally {
+    logger.endParseLog();
   }
 });
 
-async function parseWithCluster(components) {
-  const siteParsers = [serverShopParser, servakParser, hwfParser, hardkievParser, serverPartsParser, kyivtechParser, promParser];
+async function parseWithCluster(components, serverPartsFromXml = null) {
+  const siteParsers = serverPartsFromXml
+    ? [serverShopParser, hwfParser, hardkievParser, promParser]
+    : [serverShopParser, hwfParser, hardkievParser, serverPartsParser, promParser];
 
   const cluster = await Cluster.launch({
     concurrency: Cluster.CONCURRENCY_PAGE,
-    maxConcurrency: 4,
-    puppeteerOptions: { headless: true, args: ["--no-sandbox", "--disable-setuid-sandbox"] }
+    maxConcurrency: 8,
+    sameDomainDelay: 1500,
+    timeout: 90000,
+    puppeteerOptions: { headless: true, args: ["--no-sandbox", "--disable-setuid-sandbox"] },
   });
 
   await cluster.task(async ({ page, data }) => {
     const { component, parser } = data;
     try {
       await page.setRequestInterception(true);
-      page.on("request", req => {
-        if (req.resourceType() === "document") req.continue();
-        else req.abort();
-      });
-      await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
+      setupPageInterception(page);
+      await page.setUserAgent(
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+      );
       const parseResult = await parser.parseSite(page, component);
       return { component, siteName: parseResult.siteName, productItems: parseResult.productItems, error: parseResult.error };
     } catch (err) {
-      console.error(`Помилка парсингу ${component} на сайті ${parser.name}:`, err);
+      logger.logError(`Помилка парсингу на ${parser.name}`, {
+        component,
+        message: err.message,
+        stack: err.stack,
+      });
       return { component, siteName: parser.name, productItems: [], error: err.message };
     }
   });
@@ -102,7 +221,41 @@ async function parseWithCluster(components) {
     }
   }
 
-  const rawResults = await Promise.all(tasks.map(task => cluster.execute(task)));
+  const total = tasks.length;
+  let completed = 0;
+  let errors = 0;
+  let lastActiveSite = "старт";
+  progressStartTime = Date.now();
+  lastPlainProgressLog = 0;
+
+  const parseSummary = `Парсинг: ${components.length} товарів × ${siteParsers.length} сайтів = ${total} задач (паралельно до 4, пауза 1.5с між запитами на один сайт)`;
+  logger.logInfo(parseSummary);
+  reportProgress(0, total, 0, lastActiveSite);
+
+  const progressInterval = setInterval(() => {
+    reportProgress(completed, total, errors, lastActiveSite);
+  }, 1000);
+
+  let rawResults;
+  try {
+    rawResults = await Promise.all(
+      tasks.map(async (task) => {
+        lastActiveSite = task.parser.name;
+        const result = await cluster.execute(task);
+        completed++;
+        if (result.error) errors++;
+        reportProgress(completed, total, errors, task.parser.name);
+        return result;
+      })
+    );
+  } finally {
+    clearInterval(progressInterval);
+  }
+
+  finishProgress();
+  const doneMsg = `Завершено: ${completed} задач, помилок: ${errors}`;
+  logger.logInfo(doneMsg);
+  console.log(doneMsg);
 
   const groupedResults = {};
   for (const { component, siteName, productItems } of rawResults) {
@@ -115,7 +268,12 @@ async function parseWithCluster(components) {
   await cluster.idle();
   await cluster.close();
 
-  return Object.entries(groupedResults).map(([name, results]) => ({ name, results }));
+  return Object.entries(groupedResults).map(([name, results]) => {
+    if (serverPartsFromXml?.[name]) {
+      results.unshift(serverPartsFromXml[name]);
+    }
+    return { name, results };
+  });
 }
 
 const PORT = process.env.PORT || 3000;

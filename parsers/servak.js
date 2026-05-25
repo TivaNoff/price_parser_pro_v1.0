@@ -1,8 +1,20 @@
 const stringSimilarity = require("string-similarity");
+const { loadSearchPage } = require("./page-utils");
+const {
+  buildSearchQuery,
+  extractModelKey,
+  modelMatches,
+  isCloudflareChallenge,
+} = require("./search-utils");
+const logger = require("../logger");
+
+const NO_RESULTS_RE =
+  /нічого не знайдено|ничего не найдено|не знайдено|не найдено|товарів не знайдено|товаров не найдено/i;
 
 module.exports = {
   name: "Servak",
-  url: (component) => `https://servak.com.ua/ua/search/?search=${encodeURIComponent(cleanComponent(component))}&limit=25`,
+  url: (component) =>
+    `https://servak.com.ua/ua/search/?search=${encodeURIComponent(buildSearchQuery(component))}&limit=25`,
   selectors: {
     container: ".content-wrapper",
     item: ".product-layout",
@@ -13,9 +25,35 @@ module.exports = {
 
   parseSite: async function (page, component) {
     try {
-      const cleanedComponent = cleanComponent(component);
-      await page.goto(this.url(cleanedComponent), { waitUntil: "networkidle2", timeout: 10000 });
-      await page.waitForSelector(this.selectors.container, { timeout: 8000 });
+      const searchQuery = buildSearchQuery(component);
+      const url = this.url(component);
+
+      for (let attempt = 0; attempt < 3; attempt++) {
+        await loadSearchPage(page, url, "body", {
+          retries: 1,
+          retryDelayMs: 3000,
+        });
+
+        const pageText = await page.evaluate(() => document.body.innerText);
+        if (!isCloudflareChallenge(pageText)) break;
+
+        if (attempt < 2) {
+          await new Promise((r) => setTimeout(r, 4000 * (attempt + 1)));
+        }
+      }
+
+      const pageText = await page.evaluate(() => document.body.innerText);
+      if (isCloudflareChallenge(pageText)) {
+        const errMsg = "Cloudflare challenge — доступ заблоковано";
+        logger.logError(`Помилка парсингу ${component} на ${this.name}`, { message: errMsg });
+        return { siteName: this.name, productItems: [notFound()], error: errMsg };
+      }
+
+      if (NO_RESULTS_RE.test(pageText)) {
+        return { siteName: this.name, productItems: [notFound()] };
+      }
+
+      await page.waitForSelector(this.selectors.item, { timeout: 8000 }).catch(() => null);
 
       const productItems = await page.evaluate(({ item, name, price, availability }) => {
         return Array.from(document.querySelectorAll(item)).map((el) => ({
@@ -28,22 +66,19 @@ module.exports = {
 
       return {
         siteName: this.name,
-        productItems: productItems.length ? [findBestMatch(cleanedComponent, productItems)] : [notFound()],
+        productItems: productItems.length
+          ? [findBestMatch(component, productItems)]
+          : [notFound()],
       };
     } catch (err) {
-      console.error(`Помилка парсингу ${component} на ${this.name}:`, err);
-      return { siteName: this.name, productItems: [], error: err.message };
+      logger.logError(`Помилка парсингу ${component} на ${this.name}`, { message: err.message });
+      return { siteName: this.name, productItems: [notFound()], error: err.message };
     }
   },
 };
 
-// Функция обработки названия компонента (удаляет текст в скобках, очищает пробелы)
-const cleanComponent = (text) => text.replace(/\(.*?\)|\s+/g, " ").trim();
-
-// Функция нормализации текста (удаление скобок, пробелов, приведение к нижнему регистру)
 const normalizeText = (text) => text.replace(/\(.*?\)|\s+/g, "").toLowerCase();
 
-// Карта порогов схожести для разных компонентов
 const similarityThresholds = {
   "процесор": 0.97,
   "відеокарта": 0.95,
@@ -55,7 +90,6 @@ const similarityThresholds = {
   "материнськаплата": 0.85,
 };
 
-// Функция для получения порога схожести в зависимости от компонента
 const getSimilarityThreshold = (component) => {
   const category = Object.keys(similarityThresholds).find((prefix) =>
     normalizeText(component).startsWith(prefix)
@@ -63,26 +97,33 @@ const getSimilarityThreshold = (component) => {
   return category ? similarityThresholds[category] : 0.75;
 };
 
-// Функция поиска лучшего совпадения
 const findBestMatch = (component, productItems) => {
-  const normalizedComponent = normalizeText(component);
+  const hasModelKey = Boolean(extractModelKey(component));
+  const candidates = hasModelKey
+    ? productItems.filter((prod) => modelMatches(component, prod.name))
+    : productItems;
+
+  if (!candidates.length) return notFound();
+
+  const normalizedComponent = normalizeText(buildSearchQuery(component));
   const similarityThreshold = getSimilarityThreshold(component);
 
-  const bestMatch = productItems.reduce(
+  const bestMatch = candidates.reduce(
     (best, prod) => {
-      const similarity = stringSimilarity.compareTwoStrings(normalizedComponent, normalizeText(prod.name));
+      const similarity = stringSimilarity.compareTwoStrings(
+        normalizedComponent,
+        normalizeText(prod.name)
+      );
       return similarity > best.similarity ? { prod, similarity } : best;
     },
     { prod: null, similarity: 0 }
   );
 
-  console.log(`Лучший товар: ${bestMatch.prod?.name || "не найден"}, Схожість: ${bestMatch.similarity}`);
   return bestMatch.prod && bestMatch.similarity >= similarityThreshold
     ? { site: "Servak", ...bestMatch.prod }
     : notFound();
 };
 
-// Функция возвращает объект, если товар не найден
 const notFound = () => ({
   site: "Servak",
   name: "Товар не знайдено",

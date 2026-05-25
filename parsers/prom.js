@@ -1,34 +1,46 @@
 const stringSimilarity = require("string-similarity");
+const {
+  buildSearchQuery,
+  filterByModelMatch,
+  normalizeSearchText,
+  isAccessoryBundle,
+} = require("./search-utils");
+const logger = require("../logger");
+
+const EMPTY_RESULTS_RE = /нічого не знайдено|не знайдено|не найдено|ничего не найдено/i;
 
 module.exports = {
   name: "Prom",
   url: (component) =>
     `https://prom.ua/ua/search?search_term=${encodeURIComponent(
-      cleanComponent(component)
+      buildSearchQuery(component)
     )}&a10006=83770&binary_filters=presence_available`,
   selectors: {
-    container: ".Oxjl-",
-    item: ".l-GwW",
-    name: ".h97_n",
-    price: ".yzKb6",
-    availability: ".NSmdF",
+    item: '[data-qaid="product_block"]',
+    name: '[data-qaid="product_name"]',
+    price: '[data-qaid="product_price"]',
+    availability: '[data-qaid="product_presence"]',
+    link: 'a[data-qaid="product_link"]',
   },
 
   parseSite: async function (page, component) {
     try {
-      const cleanedComponent = cleanComponent(component);
-      await page.goto(this.url(cleanedComponent), {
-        waitUntil: "networkidle2",
-        timeout: 12000,
+      await page.goto(this.url(component), {
+        waitUntil: "domcontentloaded",
+        timeout: 15000,
       });
-      await page.waitForSelector(this.selectors.container, { timeout: 5000 });
+
+      const hasResults = await waitForPromResults(page, this.selectors.item, 10000);
+      if (!hasResults) {
+        return { siteName: this.name, productItems: [notFound()] };
+      }
 
       const productItems = await page.evaluate(
-        ({ item, name, price, availability }) => {
+        ({ item, name, price, availability, link }) => {
           return Array.from(document.querySelectorAll(item)).map((el) => ({
             name: el.querySelector(name)?.innerText.trim() || "",
             price: el.querySelector(price)?.innerText.trim() || "Ціна не знайдена",
-            link: el.querySelector("a")?.href || "Посилання не знайдено",
+            link: el.querySelector(link)?.href || el.querySelector("a")?.href || "Посилання не знайдено",
             availability:
               el.querySelector(availability)?.innerText.trim() ||
               "Наявність не вказана",
@@ -40,60 +52,56 @@ module.exports = {
       return {
         siteName: this.name,
         productItems: productItems.length
-          ? [findBestMatch(cleanedComponent, productItems)]
+          ? [findBestMatch(component, productItems)]
           : [notFound()],
       };
     } catch (err) {
-      console.error(`Помилка парсингу ${component} на ${this.name}:`, err);
-      return { siteName: this.name, productItems: [], error: err.message };
+      logger.logError(`Помилка парсингу ${component} на ${this.name}`, { message: err.message });
+      return { siteName: this.name, productItems: [notFound()], error: err.message };
     }
   },
 };
 
-// Удаляет текст в скобках вместе со скобками
+async function waitForPromResults(page, itemSelector, timeoutMs) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const state = await page.evaluate((sel, emptyReSource) => {
+      const emptyRe = new RegExp(emptyReSource, "i");
+      return {
+        blocks: document.querySelectorAll(sel).length,
+        empty: emptyRe.test(document.body.innerText),
+      };
+    }, itemSelector, EMPTY_RESULTS_RE.source);
+
+    if (state.blocks > 0) return true;
+    if (state.empty) return false;
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  return false;
+}
+
 const removeParenthesesContent = (text) =>
   text.replace(/\s*\(.*?\)\s*/g, " ").trim();
 
-// Очищает компонент для поиска (удаляет текст в скобках, лишние пробелы)
-const cleanComponent = (text) =>
-  removeParenthesesContent(text).replace(/\s+/g, " ").trim();
-
-// Нормализует текст для сравнения (нижний регистр, удаляет все пробелы)
 const normalizeText = (text) => text.replace(/\s+/g, "").toLowerCase();
 
-// Преобразует строку цены в число
 const parsePrice = (priceText) => {
   const cleaned = priceText.replace(/[^0-9.,]/g, "").replace(/\s+/g, "");
   const normalized = cleaned.replace(",", ".");
   return parseFloat(normalized);
 };
 
-// Карта порогов схожести
-const similarityThresholds = {
-  "процесор": 0.89,
-  "відеокарта": 0.93,
-  "сервер": 0.9,
-  "оперативнапам'ять": 0.89,
-  "накопичувач": 0.83,
-  "жорсткийдиск": 0.83,
-  "накопичувачssd": 0.83,
-  "материнськаплата": 0.89,
-};
-
-const getSimilarityThreshold = (component) => {
-  const category = Object.keys(similarityThresholds).find((prefix) =>
-    normalizeText(component).startsWith(prefix)
-  );
-  return category ? similarityThresholds[category] : 0.75;
-};
-
-// Поиск лучшего совпадения с учётом удаления скобок и выбора самого дешёвого из подходящих
 const findBestMatch = (component, productItems) => {
-  const normalizedComponent = normalizeText(cleanComponent(component));
-  const threshold = getSimilarityThreshold(component);
+  const normalizedComponent = normalizeSearchText(buildSearchQuery(component));
 
-  // Собираем все товары, подходящие по схожести
-  const matches = productItems
+  const exactMatches = filterByModelMatch(component, productItems).filter(
+    (prod) => !isAccessoryBundle(prod.name, component)
+  );
+  if (!exactMatches.length) {
+    return notFound();
+  }
+
+  const ranked = exactMatches
     .map((prod) => {
       const nameForCompare = removeParenthesesContent(prod.name);
       const similarity = stringSimilarity.compareTwoStrings(
@@ -102,15 +110,14 @@ const findBestMatch = (component, productItems) => {
       );
       return { prod, similarity };
     })
-    .filter((m) => m.similarity >= threshold);
+    .filter((item) => item.similarity >= 0.55)
+    .sort((a, b) => b.similarity - a.similarity);
 
-  if (!matches.length) {
-    console.log(`No suitable products found for "${component}"`);
+  if (!ranked.length) {
     return notFound();
   }
 
-  // Из подходящих выбираем самый дешёвый
-  const cheapest = matches.reduce((best, current) => {
+  const cheapest = ranked.reduce((best, current) => {
     const bestPrice = parsePrice(best.prod.price);
     const currPrice = parsePrice(current.prod.price);
     if (isNaN(bestPrice)) return current;
@@ -118,13 +125,9 @@ const findBestMatch = (component, productItems) => {
     return currPrice < bestPrice ? current : best;
   });
 
-  console.log(
-    `Best match Prom: ${cheapest.prod.name}, price: ${cheapest.prod.price}`
-  );
   return { site: "Prom", ...cheapest.prod };
 };
 
-// Возвращает объект "не найдено"
 const notFound = () => ({
   site: "Prom",
   name: "Товар не знайдено",

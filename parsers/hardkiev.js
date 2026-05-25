@@ -1,33 +1,40 @@
 const stringSimilarity = require("string-similarity");
-
-const TRIGGERS = [
-  "Оперативна пам'ять",
-  "Диск NVMe",
-  "Жорсткий диск",
-  "Накопичувач SSD",
-];
+const { loadSearchPage } = require("./page-utils");
+const {
+  buildSearchQuery,
+  filterByModelMatch,
+  normalizeSearchText,
+  isAccessoryBundle,
+} = require("./search-utils");
+const logger = require("../logger");
 
 module.exports = {
   name: "HardKiev",
   url: (component) => {
-    const searchTerm = normalizeText(extractSearchTerm(component));
+    const searchTerm = buildSearchQuery(component);
     return `https://hard.kiev.ua/search/?query=${encodeURIComponent(searchTerm)}`;
   },
 
   selectors: {
-    container: ".container",
-    item: "tr",
-    name: "h5",
-    price: ".price",
+    container: "body",
+    item: "table.product-list tr[itemprop='offers']",
+    name: "h5 a, h5",
+    price: ".price .sku_count, .price",
     availability: ".stocks",
   },
 
   parseSite: async function (page, component) {
     try {
-      const searchTerm = normalizeText(extractSearchTerm(component));
+      const searchTerm = normalizeSearchText(buildSearchQuery(component));
 
-      await page.goto(this.url(component), { waitUntil: "networkidle2" });
-      await page.waitForSelector(this.selectors.container, { timeout: 5000 });
+      await loadSearchPage(page, this.url(component), this.selectors.container);
+
+      const noResults = await page.evaluate(() =>
+        /Нажаль,\s*нічого не знайдено/i.test(document.body.innerText)
+      );
+      if (noResults) {
+        return { siteName: this.name, productItems: [notFoundItem()] };
+      }
 
       const productItems = await page.evaluate((selectors) => {
         const items = document.querySelectorAll(selectors.item);
@@ -50,56 +57,57 @@ module.exports = {
 
       return {
         siteName: this.name,
-        productItems: findBestMatch(searchTerm, productItems),
+        productItems: findBestMatch(component, searchTerm, productItems),
       };
-    } catch {
-      return { siteName: this.name, productItems: [], error: "Помилка парсингу" };
+    } catch (err) {
+      logger.logError(`Помилка парсингу ${component} на ${this.name}`, {
+        message: err?.message || "Помилка парсингу",
+      });
+      return { siteName: this.name, productItems: [notFoundItem()], error: err?.message || "Помилка парсингу" };
     }
   },
 };
 
-function extractSearchTerm(component) {
-  if (TRIGGERS.some((trigger) => component.startsWith(trigger))) {
-    const match = component.match(/\(([^)]+)\)/);
-    return match ? match[1].trim() : component.trim();
-  }
-  return component.replace(/\([^)]*\)/g, "").trim();
-}
-
-function normalizeText(str) {
-  return str ? str.toLowerCase().replace(/\s+/g, " ").trim() : "";
-}
-
-function findBestMatch(searchTerm, productItems) {
+function findBestMatch(component, searchTerm, productItems) {
   if (!productItems.length) {
-    return [{
-      site: "HardKiev",
-      name: "Товар не знайдено",
-      price: "Ціна не знайдена",
-      link: "Посилання не знайдено",
-      availability: "Немає даних",
-    }];
+    return [notFoundItem()];
+  }
+
+  const candidates = filterByModelMatch(component, productItems).filter(
+    (prod) => !isAccessoryBundle(prod.name, component)
+  );
+
+  if (!candidates.length) {
+    return [notFoundItem()];
+  }
+
+  for (const prod of candidates) {
+    const normalizedName = normalizeSearchText(prod.name);
+    if (normalizedName.includes(searchTerm)) {
+      return [{ site: "HardKiev", ...prod }];
+    }
   }
 
   let bestMatch = null;
   let highestSimilarity = 0;
 
-  for (const prod of productItems) {
-    const normalizedName = normalizeText(prod.name);
-    if (normalizedName.includes(searchTerm)) return [{ site: "HardKiev", ...prod }];
-
-    const similarity = stringSimilarity.compareTwoStrings(searchTerm, normalizedName);
+  for (const prod of candidates) {
+    const similarity = stringSimilarity.compareTwoStrings(searchTerm, normalizeSearchText(prod.name));
     if (similarity > highestSimilarity) {
       highestSimilarity = similarity;
       bestMatch = prod;
     }
   }
 
-  return highestSimilarity > 0.4 ? [{ site: "HardKiev", ...bestMatch }] : [{
+  return highestSimilarity >= 0.55 ? [{ site: "HardKiev", ...bestMatch }] : [notFoundItem()];
+}
+
+function notFoundItem() {
+  return {
     site: "HardKiev",
     name: "Товар не знайдено",
     price: "Ціна не знайдена",
     link: "Посилання не знайдено",
     availability: "Немає даних",
-  }];
+  };
 }

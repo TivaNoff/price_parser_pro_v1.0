@@ -1,19 +1,25 @@
 const stringSimilarity = require("string-similarity");
+const { loadSearchPage } = require("./page-utils");
+const {
+  buildSearchQuery,
+  filterByModelMatch,
+  normalizeSearchText,
+  isAccessoryBundle,
+  isCloudflareChallenge,
+} = require("./search-utils");
+const logger = require("../logger");
 
-const TRIGGERS = [
-  "Оперативна пам'ять",
-  "Диск NVMe",
-  "Жорсткий диск",
-  "Накопичувач SSD",
-];
+const NO_RESULTS_RE =
+  /нічого не знайдено|ничего не найдено|не знайдено|подходящих результатов не найдено|не найдено/i;
 
 module.exports = {
   name: "Server-Shop",
-  url: (component) => `https://server-shop.ua/ua/search.html?query=${encodeURIComponent(normalizeText(extractSearchTerm(component)))}`,
+  url: (component) =>
+    `https://server-shop.ua/ua/search.html?query=${encodeURIComponent(buildSearchQuery(component))}`,
 
   selectors: {
     container: ".catalog_block",
-    item: ".item",
+    item: ".catalog_block .item",
     name: ".title_wrap",
     price: ".price_text",
     availability: ".cat_item_stock_status",
@@ -22,11 +28,37 @@ module.exports = {
 
   async parseSite(page, component) {
     try {
-      const searchTerm = normalizeText(extractSearchTerm(component));
-      await page.goto(this.url(component), { waitUntil: "networkidle2" });
-      await page.waitForSelector(this.selectors.container, { timeout: 5000 });
+      const searchTerm = normalizeSearchText(buildSearchQuery(component));
+      const url = this.url(component);
+      for (let attempt = 0; attempt < 3; attempt++) {
+        await loadSearchPage(page, url, "body", {
+          retries: 1,
+          retryDelayMs: 3000,
+        });
 
-      const productItems = await page.evaluate((selectors) => 
+        const pageText = await page.evaluate(() => document.body.innerText);
+        if (!isCloudflareChallenge(pageText)) break;
+
+        if (attempt < 2) {
+          await new Promise((r) => setTimeout(r, 4000 * (attempt + 1)));
+        }
+      }
+
+      const pageText = await page.evaluate(() => document.body.innerText);
+      if (isCloudflareChallenge(pageText)) {
+        const errMsg = "Cloudflare challenge — доступ заблоковано";
+        logger.logError(`Помилка парсингу ${component} на Server-Shop`, { message: errMsg });
+        return { siteName: this.name, productItems: [notFoundItem()], error: errMsg };
+      }
+
+      const noResults = NO_RESULTS_RE.test(pageText);
+      if (noResults) {
+        return { siteName: this.name, productItems: [notFoundItem()] };
+      }
+
+      await page.waitForSelector(this.selectors.container, { timeout: 8000 }).catch(() => null);
+
+      const productItems = await page.evaluate((selectors) =>
         Array.from(document.querySelectorAll(selectors.item)).map((item) => ({
           name: item.querySelector(selectors.name)?.innerText.trim() || "",
           price: item.querySelector(selectors.price)?.innerText.trim() || "Ціна не знайдена",
@@ -37,38 +69,57 @@ module.exports = {
         this.selectors
       );
 
+      if (!productItems.length) {
+        return { siteName: this.name, productItems: [notFoundItem()] };
+      }
+
       return {
         siteName: this.name,
-        productItems: [findBestMatchOrContains(searchTerm, productItems)].filter(Boolean),
+        productItems: [findBestMatchOrContains(component, searchTerm, productItems)],
       };
     } catch (err) {
-      console.error(`❌ Помилка парсингу ${component} на Server-Shop:`, err);
-      return { siteName: this.name, productItems: [], error: err.message };
+      logger.logError(`Помилка парсингу ${component} на Server-Shop`, { message: err.message });
+      return {
+        siteName: this.name,
+        productItems: [notFoundItem()],
+        error: err.message,
+      };
     }
   },
 };
 
-function extractSearchTerm(component) {
-  return TRIGGERS.some((trigger) => component.startsWith(trigger))
-    ? (component.match(/\(([^)]+)\)/)?.[1] || component).trim()
-    : component.replace(/\([^)]*\)/g, "").trim();
-}
+function findBestMatchOrContains(component, searchTerm, productItems) {
+  const candidates = filterByModelMatch(component, productItems).filter(
+    (prod) => !isAccessoryBundle(prod.name, component)
+  );
 
-function normalizeText(str) {
-  return str?.toLowerCase().replace(/\s+/g, " ").trim() || "";
-}
+  if (!candidates.length) return notFoundItem();
 
-function findBestMatchOrContains(searchTerm, productItems) {
-  const normalizedSearchTerm = normalizeText(searchTerm);
-  const exactMatch = productItems.find((prod) => normalizeText(prod.textSmall).includes(normalizedSearchTerm));
+  const exactMatch = candidates.find((prod) =>
+    normalizeSearchText(prod.textSmall).includes(searchTerm) ||
+    normalizeSearchText(prod.name).includes(searchTerm)
+  );
   if (exactMatch) return { site: "Server-Shop", ...exactMatch };
 
-  const bestMatch = productItems.reduce((best, prod) => {
-    const similarity = stringSimilarity.compareTwoStrings(normalizedSearchTerm, normalizeText(prod.name));
-    return similarity > best.similarity ? { prod, similarity } : best;
-  }, { prod: null, similarity: 0 });
+  const bestMatch = candidates.reduce(
+    (best, prod) => {
+      const similarity = stringSimilarity.compareTwoStrings(searchTerm, normalizeSearchText(prod.name));
+      return similarity > best.similarity ? { prod, similarity } : best;
+    },
+    { prod: null, similarity: 0 }
+  );
 
-  return bestMatch.prod && bestMatch.similarity > 0.4
+  return bestMatch.prod && bestMatch.similarity >= 0.55
     ? { site: "Server-Shop", ...bestMatch.prod }
-    : { site: "Server-Shop", name: "Товар не знайдено", price: "Ціна не знайдена", link: "Посилання не знайдено", availability: "Немає даних" };
+    : notFoundItem();
+}
+
+function notFoundItem() {
+  return {
+    site: "Server-Shop",
+    name: "Товар не знайдено",
+    price: "Ціна не знайдена",
+    link: "Посилання не знайдено",
+    availability: "Немає даних",
+  };
 }

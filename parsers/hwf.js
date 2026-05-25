@@ -1,36 +1,65 @@
 const stringSimilarity = require("string-similarity");
-
-function cleanComponent(text) {
-  return text.startsWith("Відеокарта") || text.startsWith("Робоча станція")
-    ? text.trim()
-    : text.replace(/\(.*?\)/g, "").trim();
-}
+const { loadSearchPage } = require("./page-utils");
+const {
+  buildSearchQuery,
+  filterByModelMatch,
+  normalizeSearchText,
+  isAccessoryBundle,
+} = require("./search-utils");
+const logger = require("../logger");
 
 function normalizeText(text, isGpu, isWorkstation) {
-  return (isGpu || isWorkstation)
-    ? text.trim().toLowerCase()
-    : text.replace(/\(.*?\)/g, "").replace(/\s+/g, "").toLowerCase();
+  return isGpu || isWorkstation
+    ? normalizeSearchText(text)
+    : normalizeSearchText(text).replace(/\s+/g, "");
 }
 
 function findBestMatch(component, productItems) {
   const isGpu = component.startsWith("Відеокарта");
   const isWorkstation = component.startsWith("Робоча станція");
-  const normalizedComponent = normalizeText(component, isGpu, isWorkstation);
-  
-  let bestMatch = productItems.reduce((best, prod) => {
-    const sim = stringSimilarity.compareTwoStrings(normalizedComponent, normalizeText(prod.name, isGpu, isWorkstation));
-    return sim > best.similarity ? { prod, similarity: sim } : best;
-  }, { prod: null, similarity: 0 });
-  
-  
-  return bestMatch.similarity > 0.72
+  const searchQuery = buildSearchQuery(component);
+  const normalizedComponent = normalizeText(searchQuery, isGpu, isWorkstation);
+
+  let candidates = filterByModelMatch(component, productItems).filter(
+    (prod) => !isAccessoryBundle(prod.name, component)
+  );
+
+  if (!candidates.length) {
+    return {
+      site: "HWF",
+      name: "Товар не знайдено",
+      price: "Ціна не знайдена",
+      link: "Посилання не знайдено",
+      availability: "Немає даних",
+    };
+  }
+
+  const bestMatch = candidates.reduce(
+    (best, prod) => {
+      const similarity = stringSimilarity.compareTwoStrings(
+        normalizedComponent,
+        normalizeText(prod.name, isGpu, isWorkstation)
+      );
+      return similarity > best.similarity ? { prod, similarity } : best;
+    },
+    { prod: null, similarity: 0 }
+  );
+
+  return bestMatch.prod && bestMatch.similarity >= 0.72
     ? { site: "HWF", ...bestMatch.prod }
-    : { site: "HWF", name: "Товар не знайдено", price: "Ціна не знайдена", link: "Посилання не знайдено", availability: "Немає даних" };
+    : {
+        site: "HWF",
+        name: "Товар не знайдено",
+        price: "Ціна не знайдена",
+        link: "Посилання не знайдено",
+        availability: "Немає даних",
+      };
 }
 
 module.exports = {
   name: "HWF",
-  url: (component) => `https://hwf.com.ua/katalog/search/?q=${encodeURIComponent(cleanComponent(component))}`,
+  url: (component) =>
+    `https://hwf.com.ua/katalog/search/?q=${encodeURIComponent(buildSearchQuery(component))}`,
   selectors: {
     container: ".catalog",
     item: ".catalog-grid__item",
@@ -41,11 +70,10 @@ module.exports = {
 
   parseSite: async function (page, component) {
     try {
-      await page.goto(this.url(component), { waitUntil: "networkidle2" });
-      await page.waitForSelector(this.selectors.container, { timeout: 6500 });
-      
+      await loadSearchPage(page, this.url(component), this.selectors.item);
+
       const productItems = await page.evaluate(({ item, name, price, avail }) => {
-        return Array.from(document.querySelectorAll(item)).map(el => ({
+        return Array.from(document.querySelectorAll(item)).map((el) => ({
           name: el.querySelector(name)?.innerText.trim() || "",
           price: el.querySelector(price)?.innerText.trim() || "Ціна не знайдена",
           link: el.querySelector("a")?.href || "Посилання не знайдено",
@@ -55,8 +83,11 @@ module.exports = {
 
       return { siteName: this.name, productItems: [findBestMatch(component, productItems)] };
     } catch (err) {
-      console.error(`Помилка парсингу ${component} на ${this.name}:`, err);
-      return { siteName: this.name, productItems: [], error: err.message };
+      logger.logError(`Помилка парсингу ${component} на ${this.name}`, {
+        message: err.message,
+        stack: err.stack,
+      });
+      return { siteName: this.name, productItems: [findBestMatch(component, [])], error: err.message };
     }
   },
 };

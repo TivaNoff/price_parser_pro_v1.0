@@ -49,6 +49,30 @@ document.addEventListener("DOMContentLoaded", function () {
     return isNaN(numericValue) ? null : numericValue;
   }
 
+  function isServerPartsSite(siteResult) {
+    return siteResult.site.toLowerCase() === "serverparts";
+  }
+
+  function passesAvailabilityFilter(siteResult, availabilityFilter) {
+    if (!availabilityFilter) return true;
+    return (
+      siteResult.availability !== "Немає в наявності" &&
+      siteResult.availability !== "Наявність не вказана" &&
+      siteResult.availability !== "Немає даних"
+    );
+  }
+
+  function passesOrderFilter(siteResult, orderFilter) {
+    if (!orderFilter) return true;
+    return siteResult.availability !== "Під замовлення";
+  }
+
+  function passesFilters(siteResult, availabilityFilter, orderFilter) {
+    if (isServerPartsSite(siteResult)) return true;
+    return passesAvailabilityFilter(siteResult, availabilityFilter) &&
+      passesOrderFilter(siteResult, orderFilter);
+  }
+
   function displayResults(results) {
     const resultsContainer = document.getElementById("results-container");
     const cheaperMenuContainer = document.getElementById("cheaper-menu");
@@ -79,16 +103,15 @@ document.addEventListener("DOMContentLoaded", function () {
 
       // Перевіряємо, чи є дешевші пропозиції у інших магазинів
       result.results.forEach((siteResult) => {
-        const price = parsePrice(siteResult.price);
-        const available = !availabilityFilter 
-          || (
-               siteResult.availability !== "Немає в наявності"
-            && siteResult.availability !== "Наявність не вказана"
-            && siteResult.availability !== "Немає даних"
-             );
-        const orderable = !orderFilter || siteResult.availability !== "Під замовлення";
+        if (isServerPartsSite(siteResult)) return;
 
-        if (serverPartsPrice !== null && price !== null && price < serverPartsPrice && available && orderable) {
+        const price = parsePrice(siteResult.price);
+        if (
+          serverPartsPrice !== null &&
+          price !== null &&
+          price < serverPartsPrice &&
+          passesFilters(siteResult, availabilityFilter, orderFilter)
+        ) {
           hasCheaperThanServerParts = true;
         }
       });
@@ -97,16 +120,9 @@ document.addEventListener("DOMContentLoaded", function () {
         cheaperProducts.push({ name: result.name, blockId: productBlockId });
       }
 
-      // Виводимо результати з урахуванням фільтрів
+      // Виводимо результати з урахуванням фільтрів (ServerParts завжди показуємо)
       result.results.forEach((siteResult) => {
-        if (
-          (availabilityFilter && (
-              siteResult.availability === "Немає в наявності"
-           || siteResult.availability === "Наявність не вказана"
-           || siteResult.availability === "Немає даних"
-          )) ||
-          (orderFilter && siteResult.availability === "Під замовлення")
-        ) {
+        if (!passesFilters(siteResult, availabilityFilter, orderFilter)) {
           return;
         }
 
