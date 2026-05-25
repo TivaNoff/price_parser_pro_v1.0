@@ -3,6 +3,7 @@ const fs = require("fs");
 const path = require("path");
 const multer = require("multer");
 const { Cluster } = require("puppeteer-cluster");
+const stealthPuppeteer = require("./parsers/stealth-browser");
 const xml2js = require("xml2js");
 
 // Подключаем наши парсеры
@@ -68,6 +69,28 @@ function extractServerPartsFromXml(parsedXml) {
 }
 
 const ALLOWED_RESOURCE_TYPES = new Set(["document", "script", "xhr", "fetch", "stylesheet"]);
+const CHROME_ARGS = ["--no-sandbox", "--disable-setuid-sandbox"];
+const USER_AGENT =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+
+const CLUSTER_DEFAULTS = {
+  concurrency: Cluster.CONCURRENCY_PAGE,
+  timeout: 90000,
+  puppeteerOptions: { headless: true, args: CHROME_ARGS },
+};
+
+const SERVER_SHOP_CLUSTER = {
+  ...CLUSTER_DEFAULTS,
+  puppeteer: stealthPuppeteer,
+  maxConcurrency: 2,
+  sameDomainDelay: 5000,
+};
+
+const MAIN_CLUSTER = {
+  ...CLUSTER_DEFAULTS,
+  maxConcurrency: 8,
+  sameDomainDelay: 1500,
+};
 
 function setupPageInterception(page) {
   page.removeAllListeners("request");
@@ -182,53 +205,29 @@ app.post("/parse", upload.single("file"), async (req, res) => {
 });
 
 async function parseWithCluster(components, serverPartsFromXml = null) {
-  const siteParsers = serverPartsFromXml
-    ? [serverShopParser, hwfParser, hardkievParser, promParser]
-    : [serverShopParser, hwfParser, hardkievParser, serverPartsParser, promParser];
+  const otherParsers = serverPartsFromXml
+    ? [hwfParser, hardkievParser, promParser]
+    : [hwfParser, hardkievParser, serverPartsParser, promParser];
 
-  const cluster = await Cluster.launch({
-    concurrency: Cluster.CONCURRENCY_PAGE,
-    maxConcurrency: 8,
-    sameDomainDelay: 1500,
-    timeout: 90000,
-    puppeteerOptions: { headless: true, args: ["--no-sandbox", "--disable-setuid-sandbox"] },
-  });
-
-  await cluster.task(async ({ page, data }) => {
-    const { component, parser } = data;
-    try {
-      await page.setRequestInterception(true);
-      setupPageInterception(page);
-      await page.setUserAgent(
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-      );
-      const parseResult = await parser.parseSite(page, component);
-      return { component, siteName: parseResult.siteName, productItems: parseResult.productItems, error: parseResult.error };
-    } catch (err) {
-      logger.logError(`Помилка парсингу на ${parser.name}`, {
-        component,
-        message: err.message,
-        stack: err.stack,
-      });
-      return { component, siteName: parser.name, productItems: [], error: err.message };
-    }
-  });
-
-  const tasks = [];
+  const shopTasks = components.map((component) => ({ component, parser: serverShopParser }));
+  const otherTasks = [];
   for (const component of components) {
-    for (const parser of siteParsers) {
-      tasks.push({ component, parser });
+    for (const parser of otherParsers) {
+      otherTasks.push({ component, parser });
     }
   }
 
-  const total = tasks.length;
+  const total = shopTasks.length + otherTasks.length;
   let completed = 0;
   let errors = 0;
   let lastActiveSite = "старт";
   progressStartTime = Date.now();
   lastPlainProgressLog = 0;
 
-  const parseSummary = `Парсинг: ${components.length} товарів × ${siteParsers.length} сайтів = ${total} задач (паралельно до 4, пауза 1.5с між запитами на один сайт)`;
+  const siteCount = otherParsers.length + 1;
+  const parseSummary =
+    `Парсинг: ${components.length} товарів × ${siteCount} сайтів = ${total} задач | ` +
+    `Server-Shop: stealth, ×2, пауза 5с | інші: ×8, пауза 1.5с`;
   logger.logInfo(parseSummary);
   reportProgress(0, total, 0, lastActiveSite);
 
@@ -236,9 +235,32 @@ async function parseWithCluster(components, serverPartsFromXml = null) {
     reportProgress(completed, total, errors, lastActiveSite);
   }, 1000);
 
-  let rawResults;
-  try {
-    rawResults = await Promise.all(
+  const createTaskHandler = (cluster) =>
+    cluster.task(async ({ page, data }) => {
+      const { component, parser } = data;
+      try {
+        await page.setRequestInterception(true);
+        setupPageInterception(page);
+        await page.setUserAgent(USER_AGENT);
+        const parseResult = await parser.parseSite(page, component);
+        return {
+          component,
+          siteName: parseResult.siteName,
+          productItems: parseResult.productItems,
+          error: parseResult.error,
+        };
+      } catch (err) {
+        logger.logError(`Помилка парсингу на ${parser.name}`, {
+          component,
+          message: err.message,
+          stack: err.stack,
+        });
+        return { component, siteName: parser.name, productItems: [], error: err.message };
+      }
+    });
+
+  const runTasks = async (cluster, tasks) =>
+    Promise.all(
       tasks.map(async (task) => {
         lastActiveSite = task.parser.name;
         const result = await cluster.execute(task);
@@ -248,6 +270,19 @@ async function parseWithCluster(components, serverPartsFromXml = null) {
         return result;
       })
     );
+
+  const shopCluster = await Cluster.launch(SERVER_SHOP_CLUSTER);
+  const mainCluster = await Cluster.launch(MAIN_CLUSTER);
+  createTaskHandler(shopCluster);
+  createTaskHandler(mainCluster);
+
+  let rawResults;
+  try {
+    const [shopResults, otherResults] = await Promise.all([
+      runTasks(shopCluster, shopTasks),
+      runTasks(mainCluster, otherTasks),
+    ]);
+    rawResults = [...shopResults, ...otherResults];
   } finally {
     clearInterval(progressInterval);
   }
@@ -258,15 +293,17 @@ async function parseWithCluster(components, serverPartsFromXml = null) {
   console.log(doneMsg);
 
   const groupedResults = {};
-  for (const { component, siteName, productItems } of rawResults) {
+  for (const { component, productItems } of rawResults) {
     if (!groupedResults[component]) {
       groupedResults[component] = [];
     }
     groupedResults[component].push(...productItems);
   }
 
-  await cluster.idle();
-  await cluster.close();
+  await shopCluster.idle();
+  await shopCluster.close();
+  await mainCluster.idle();
+  await mainCluster.close();
 
   return Object.entries(groupedResults).map(([name, results]) => {
     if (serverPartsFromXml?.[name]) {
