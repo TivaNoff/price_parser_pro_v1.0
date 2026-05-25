@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="uk">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Перегляд результатів парсингу</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+  <h1>Результати парсингу цін</h1>
+
+  <div id="upload-section">
+    <p id="upload-hint">
+      Відкрийте цей файл у браузері — сервер не потрібен.<br>
+      Оберіть або перетягніть файл <strong>parsed_results.json</strong>.
+    </p>
+
+    <div id="drop-zone">
+      <p>Перетягніть JSON-файл сюди</p>
+      <form id="json-form">
+        <input type="file" id="json-input" accept=".json,application/json" />
+        <button type="submit">Показати результати</button>
+      </form>
+      <span id="file-name"></span>
+    </div>
+  </div>
+
+  <div id="filters-menu"
+    style="position: fixed; top: 10px; right: 350px; background: white; padding: 10px; border-radius: 5px; box-shadow: 0px 0px 10px rgba(0, 0, 0, 0.1);">
+    <label>
+      <input type="checkbox" id="availability-filter" />
+      Показати тільки товари, що є в наявності
+    </label>
+    <br>
+    <label>
+      <input type="checkbox" id="order-filter" />
+      Показувати товари Під замовлення
+    </label>
+  </div>
+
+  <div id="cheaper-menu"></div>
+
+  <h2>Результати</h2>
+  <div id="results-container"></div>
+
+  <script src="results-display.js"></script>
+  <script src="viewer.js"></script>
+</body>
+
+</html>
