@@ -88,28 +88,40 @@ module.exports = {
   },
 };
 
-function findBestMatchOrContains(component, searchTerm, productItems) {
-  const candidates = filterByModelMatch(component, productItems).filter(
-    (prod) => !isAccessoryBundle(prod.name, component)
+const SIMILARITY_THRESHOLD = 0.48;
+
+function productSimilarity(searchTerm, prod) {
+  const nameText = normalizeSearchText(prod.name);
+  const smallText = normalizeSearchText(prod.textSmall);
+  return Math.max(
+    stringSimilarity.compareTwoStrings(searchTerm, nameText),
+    smallText ? stringSimilarity.compareTwoStrings(searchTerm, smallText) : 0
   );
+}
+
+function findBestMatchOrContains(component, searchTerm, productItems) {
+  const filtered = productItems.filter((prod) => !isAccessoryBundle(prod.name, component));
+  let candidates = filterByModelMatch(component, filtered);
+  if (!candidates.length) candidates = filtered;
 
   if (!candidates.length) return notFoundItem();
 
-  const exactMatch = candidates.find((prod) =>
-    normalizeSearchText(prod.textSmall).includes(searchTerm) ||
-    normalizeSearchText(prod.name).includes(searchTerm)
-  );
+  const exactMatch = candidates.find((prod) => {
+    const nameText = normalizeSearchText(prod.name);
+    const smallText = normalizeSearchText(prod.textSmall);
+    return smallText.includes(searchTerm) || nameText.includes(searchTerm) || searchTerm.includes(nameText);
+  });
   if (exactMatch) return { site: "Server-Shop", ...exactMatch };
 
   const bestMatch = candidates.reduce(
     (best, prod) => {
-      const similarity = stringSimilarity.compareTwoStrings(searchTerm, normalizeSearchText(prod.name));
+      const similarity = productSimilarity(searchTerm, prod);
       return similarity > best.similarity ? { prod, similarity } : best;
     },
     { prod: null, similarity: 0 }
   );
 
-  return bestMatch.prod && bestMatch.similarity >= 0.55
+  return bestMatch.prod && bestMatch.similarity >= SIMILARITY_THRESHOLD
     ? { site: "Server-Shop", ...bestMatch.prod }
     : notFoundItem();
 }

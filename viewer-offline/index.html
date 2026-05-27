@@ -30,14 +30,16 @@
   <div id="filters-menu"
     style="position: fixed; top: 10px; right: 350px; background: white; padding: 10px; border-radius: 5px; box-shadow: 0px 0px 10px rgba(0, 0, 0, 0.1);">
     <label>
-      <input type="checkbox" id="availability-filter" />
+      <input type="checkbox" id="availability-filter" checked />
       Показати тільки товари, що є в наявності
     </label>
     <br>
     <label>
-      <input type="checkbox" id="order-filter" />
+      <input type="checkbox" id="order-filter" checked />
       Показувати товари Під замовлення
     </label>
+    <br>
+    <button type="button" id="export-xml-btn">Експорт XML</button>
   </div>
 
   <div id="cheaper-menu"></div>
@@ -45,6 +47,7 @@
   <h2>Результати</h2>
   <div id="results-container"></div>
 
+  <script src="results-export.js"></script>
   <script src="results-display.js"></script>
   <script src="viewer.js"></script>
 </body>

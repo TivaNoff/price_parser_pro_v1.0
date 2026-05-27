@@ -12,28 +12,6 @@
     return siteResult.site.toLowerCase() === "serverparts";
   }
 
-  function passesAvailabilityFilter(siteResult, availabilityFilter) {
-    if (!availabilityFilter) return true;
-    return (
-      siteResult.availability !== "Немає в наявності" &&
-      siteResult.availability !== "Наявність не вказана" &&
-      siteResult.availability !== "Немає даних"
-    );
-  }
-
-  function passesOrderFilter(siteResult, orderFilter) {
-    if (!orderFilter) return true;
-    return siteResult.availability !== "Під замовлення";
-  }
-
-  function passesFilters(siteResult, availabilityFilter, orderFilter) {
-    if (isServerPartsSite(siteResult)) return true;
-    return (
-      passesAvailabilityFilter(siteResult, availabilityFilter) &&
-      passesOrderFilter(siteResult, orderFilter)
-    );
-  }
-
   function displayResults(results) {
     const resultsContainer = document.getElementById("results-container");
     const cheaperMenuContainer = document.getElementById("cheaper-menu");
@@ -71,7 +49,7 @@
           serverPartsPrice !== null &&
           price !== null &&
           price < serverPartsPrice &&
-          passesFilters(siteResult, availabilityFilter, orderFilter)
+          ResultsExport.passesFilters(siteResult, availabilityFilter, orderFilter)
         ) {
           hasCheaperThanServerParts = true;
         }
@@ -82,7 +60,7 @@
       }
 
       result.results.forEach((siteResult) => {
-        if (!passesFilters(siteResult, availabilityFilter, orderFilter)) {
+        if (!ResultsExport.passesFilters(siteResult, availabilityFilter, orderFilter)) {
           return;
         }
 
@@ -143,6 +121,17 @@
   function init() {
     document.getElementById("availability-filter").addEventListener("change", updateResults);
     document.getElementById("order-filter").addEventListener("change", updateResults);
+
+    document.getElementById("export-xml-btn").addEventListener("click", () => {
+      const results = JSON.parse(localStorage.getItem("lastResults")) || [];
+      if (!results.length) {
+        alert("Немає результатів для експорту.");
+        return;
+      }
+      const availabilityFilter = document.getElementById("availability-filter").checked;
+      const orderFilter = document.getElementById("order-filter").checked;
+      ResultsExport.exportFilteredXml(results, availabilityFilter, orderFilter);
+    });
 
     window.navigateProduct = function (direction) {
       if (cheaperProducts.length === 0) return;

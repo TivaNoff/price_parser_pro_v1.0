@@ -88,7 +88,7 @@ const SERVER_SHOP_CLUSTER = {
 
 const MAIN_CLUSTER = {
   ...CLUSTER_DEFAULTS,
-  maxConcurrency: 8,
+  maxConcurrency: 6,
   sameDomainDelay: 1500,
 };
 
