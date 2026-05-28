@@ -13,6 +13,7 @@ const hardkievParser = require("./parsers/hardkiev");
 const serverPartsParser = require("./parsers/serverparts");
 const promParser = require("./parsers/prom");
 const logger = require("./logger");
+const { normalizeAvailability } = require("./parsers/availability-utils");
 
 function extractComponentsFromXml(parsedXml) {
   if (parsedXml?.itemlist?.item) {
@@ -297,7 +298,12 @@ async function parseWithCluster(components, serverPartsFromXml = null) {
     if (!groupedResults[component]) {
       groupedResults[component] = [];
     }
-    groupedResults[component].push(...productItems);
+    groupedResults[component].push(
+      ...productItems.map((item) => ({
+        ...item,
+        availability: normalizeAvailability(item.availability),
+      }))
+    );
   }
 
   await shopCluster.idle();

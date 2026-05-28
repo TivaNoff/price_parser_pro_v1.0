@@ -1,5 +1,5 @@
 const stringSimilarity = require("string-similarity");
-const { loadSearchPage } = require("./page-utils");
+const { loadSearchPage, fetchServerShopAvailability } = require("./page-utils");
 const {
   buildSearchQuery,
   filterByModelMatch,
@@ -22,7 +22,6 @@ module.exports = {
     item: ".catalog_block .item",
     name: ".title_wrap",
     price: ".price_text",
-    availability: ".cat_item_stock_status",
     textSmall: ".bottom_links .text-small",
   },
 
@@ -63,7 +62,7 @@ module.exports = {
           name: item.querySelector(selectors.name)?.innerText.trim() || "",
           price: item.querySelector(selectors.price)?.innerText.trim() || "Ціна не знайдена",
           link: item.querySelector("a")?.href || "Посилання не знайдено",
-          availability: item.querySelector(selectors.availability)?.innerText.trim() || "Наявність не вказана",
+          availability: "Наявність не вказана",
           textSmall: item.querySelector(selectors.textSmall)?.innerText.trim() || "",
         })),
         this.selectors
@@ -73,9 +72,14 @@ module.exports = {
         return { siteName: this.name, productItems: [notFoundItem()] };
       }
 
+      const bestMatch = findBestMatchOrContains(component, searchTerm, productItems);
+      if (bestMatch.name !== "Товар не знайдено") {
+        bestMatch.availability = await fetchServerShopAvailability(page, bestMatch.link);
+      }
+
       return {
         siteName: this.name,
-        productItems: [findBestMatchOrContains(component, searchTerm, productItems)],
+        productItems: [bestMatch],
       };
     } catch (err) {
       logger.logError(`Помилка парсингу ${component} на Server-Shop`, { message: err.message });

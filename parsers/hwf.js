@@ -1,5 +1,5 @@
 const stringSimilarity = require("string-similarity");
-const { loadSearchPage } = require("./page-utils");
+const { loadSearchPage, fetchAvailabilityFromProductPage } = require("./page-utils");
 const {
   buildSearchQuery,
   filterByModelMatch,
@@ -65,23 +65,32 @@ module.exports = {
     item: ".catalog-grid__item",
     name: ".catalogCard-title",
     price: ".catalogCard-price",
-    availability: ".catalog-card-specs__value",
+    productAvailability: ".order-box__availability",
   },
 
   parseSite: async function (page, component) {
     try {
       await loadSearchPage(page, this.url(component), this.selectors.item);
 
-      const productItems = await page.evaluate(({ item, name, price, avail }) => {
+      const productItems = await page.evaluate(({ item, name, price }) => {
         return Array.from(document.querySelectorAll(item)).map((el) => ({
           name: el.querySelector(name)?.innerText.trim() || "",
           price: el.querySelector(price)?.innerText.trim() || "Ціна не знайдена",
           link: el.querySelector("a")?.href || "Посилання не знайдено",
-          availability: el.querySelector(avail)?.innerText.trim() || "Наявність не вказана",
+          availability: "Наявність не вказана",
         }));
       }, this.selectors);
 
-      return { siteName: this.name, productItems: [findBestMatch(component, productItems)] };
+      const bestMatch = findBestMatch(component, productItems);
+      if (bestMatch.name !== "Товар не знайдено") {
+        bestMatch.availability = await fetchAvailabilityFromProductPage(
+          page,
+          bestMatch.link,
+          [this.selectors.productAvailability]
+        );
+      }
+
+      return { siteName: this.name, productItems: [bestMatch] };
     } catch (err) {
       logger.logError(`Помилка парсингу ${component} на ${this.name}`, {
         message: err.message,

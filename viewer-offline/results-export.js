@@ -17,11 +17,7 @@
 
   function passesAvailabilityFilter(siteResult, availabilityFilter) {
     if (!availabilityFilter) return true;
-    return (
-      siteResult.availability !== "Немає в наявності" &&
-      siteResult.availability !== "Наявність не вказана" &&
-      siteResult.availability !== "Немає даних"
-    );
+    return siteResult.availability === "В наявності";
   }
 
   function passesOrderFilter(siteResult, orderFilter) {

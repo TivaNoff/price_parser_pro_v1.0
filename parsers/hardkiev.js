@@ -1,5 +1,5 @@
 const stringSimilarity = require("string-similarity");
-const { loadSearchPage } = require("./page-utils");
+const { loadSearchPage, fetchHardKievAvailability } = require("./page-utils");
 const {
   buildSearchQuery,
   filterByModelMatch,
@@ -20,7 +20,6 @@ module.exports = {
     item: "table.product-list tr[itemprop='offers']",
     name: "h5 a, h5",
     price: ".price .sku_count, .price",
-    availability: ".stocks",
   },
 
   parseSite: async function (page, component) {
@@ -43,21 +42,25 @@ module.exports = {
           let nameEl = item.querySelector(selectors.name);
           let priceEl = item.querySelector(selectors.price);
           let linkEl = item.querySelector("a");
-          let availabilityEl = item.querySelector(selectors.availability);
-
           products.push({
             name: nameEl ? nameEl.innerText.trim() : "",
             price: priceEl ? priceEl.innerText.trim() : "Ціна не знайдена",
             link: linkEl ? linkEl.href : "Посилання не знайдено",
-            availability: availabilityEl ? availabilityEl.innerText.trim() : "Наявність не вказана",
+            availability: "Наявність не вказана",
           });
         });
         return products;
       }, this.selectors);
 
+      const matches = findBestMatch(component, searchTerm, productItems);
+      const bestMatch = matches[0];
+      if (bestMatch.name !== "Товар не знайдено") {
+        bestMatch.availability = await fetchHardKievAvailability(page, bestMatch.link);
+      }
+
       return {
         siteName: this.name,
-        productItems: findBestMatch(component, searchTerm, productItems),
+        productItems: matches,
       };
     } catch (err) {
       logger.logError(`Помилка парсингу ${component} на ${this.name}`, {
